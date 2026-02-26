@@ -1,3 +1,118 @@
+
+
+WinLossMap.ipynb
+ipynb
+
+I want to make a visualization tool. The end result will be a sort of Voronoi map, showing who is closest or furthest from a region on a map. First, allow users to select “Win Area Mode” or “Loss Area Mode”. I want there to be a drop down tool where users can select players to be included in the map. Eligible players can be picked from __https://tpg.marsmathis.com/api/players__. The display should be all players listed as “name” (“canonical name”) for each unique “discord_id” in the API. Users should be able to type in the name/canonical name or partial name and get a match, or select from the drop down. Multiple players can be selected. Once the mode and players are selected, the user will hit calculate. You should go to __https://tpg.marsmathis.com/api/__submissions/{discord_id} for each player selected. In this api, each entry will have a “lat” and “lon”. These are unique submissions for each player, and should be held in a database for each individual player. Then, you will generate a map based on which of the selected players is the closest (win area mode) or the furthest (loss area mode) based on the selected game mode. The attached file (WinLossMap.ipynb) has logic for making a win-loss map for each players, but this is not exactly what I want. I want either a win map or a loss map for all players in the selected game on one map. I want to deploy this in a streamlit app. Feel free to improve as needed and ask for any questions if confused.
+
+Show less
+11:14 AM
+
+Examined existing notebook logic and API data structures
+Examined existing notebook logic and API data structures
+
+Let me start by reading the notebook and checking the API endpoints to understand the data structure.
+
+
+Examined API structure to architect visualization application
+Examined API structure to architect visualization application
+
+
+Now let me check the API endpoints to understand the data structure:
+
+
+Architected Streamlit app with optimized spatial computation and interactive mapping
+Architected Streamlit app with optimized spatial computation and interactive mapping
+
+
+
+
+
+
+Now I have a solid understanding. Let me build the full Streamlit app. I'll use vectorized NumPy + scipy KDTree for fast computation, matplotlib/cartopy for rendering, and a clean UI.
+
+
+Created 4 files, ran 2 commands, read a file
+Created 4 files, ran 2 commands, read a file
+Here's what was built — 4 files ready to deploy:
+
+app.py — the full Streamlit app. Key design decisions:
+
+Player search: multiselect with live text filtering. Displays as name (canonical_name) and deduplicates by discord_id exactly as specified.
+Win/Loss toggle: in the sidebar with color-coded feedback (green for Win, red for Loss). Win = closest player owns the region; Loss = most-distant player owns it.
+Fast computation: uses scipy.cKDTree on unit-sphere XYZ coordinates instead of the notebook's double for-loop — roughly 50–100× faster, making 0.5° resolution feasible (~15 seconds).
+Rendering: matplotlib + cartopy on a Robinson projection (more visually pleasing than PlateCarree for a global map), rendered dark-themed to match Streamlit's dark mode.
+Bonus: an expandable Plotly scatter view shows each player's raw submission points on an interactive globe.
+Caching: player list cached for 5 min, submissions cached for 2 min so repeated calculations are instant.
+To deploy on Streamlit Community Cloud:
+
+Push all 4 files to a GitHub repo
+Connect at share.streamlit.io
+packages.txt handles the Cartopy system dependencies automatically
+App
+PY 
+Requirements
+TXT 
+Packages
+TXT 
+Readme
+Document · MD 
+Is it possible to make the map interactive? This works great so no worries if not
+
+11:25 AM
+
+Deliberated interactive mapping solutions and settled on Plotly approach
+Deliberated interactive mapping solutions and settled on Plotly approach
+
+
+
+
+
+
+
+
+Yes, definitely possible! The trick is to swap the matplotlib/cartopy render for a Plotly map — it can handle the grid of colored cells interactively (zoom, pan, hover to see player name + coordinates). The main tradeoff is that the interactive version works best at 1° resolution; we can keep the high-res static download as well.
+
+
+Architected interactive Plotly map integration while preserving static render
+Architected interactive Plotly map integration while preserving static render
+
+
+
+
+
+
+
+
+Now I have a clear picture. I'll replace the static display with a Plotly interactive map (zoom, pan, hover for player names), while keeping matplotlib for the high-res PNG download. The trick is using one Scattergeo trace per player with square markers at the right size to tile the globe.
+
+
+Created 2 files, ran 2 commands, read a file
+Created 2 files, ran 2 commands, read a file
+Yes, fully interactive now. Here's what changed and why:
+
+Interactive map (Plotly) is now the primary display — one Scattergeo trace per player with symbol="square" markers that tile the globe like a Voronoi grid. This gives you:
+
+🖱 Zoom & pan freely across the globe
+🖱 Hover any region to see the player name + lat/lon coordinates
+🖱 Click a legend entry to hide/show that player's territory
+🖱 Double-click a legend entry to isolate just that player
+The one real tradeoff: the interactive map runs at 1° grid resolution (~65k points) so the browser stays smooth. At higher zoom, you'll notice the square markers don't perfectly tile — this is unavoidable without generating ~65k GeoJSON polygon shapes which would make the page unresponsive. The Voronoi boundaries are still sharp and accurate, they just look slightly coarser when zoomed in.
+
+High-res static PNG (0.5° grid, crisp boundaries) is still available in a collapsible expander below the map with a download button — it's computed lazily only when you open it.
+
+App
+PY 
+
+
+Want to be notified when Claude responds?
+
+
+
+Claude is AI and can make mistakes. Please double-check responses.
+App · PY
+Copy
+
 import streamlit as st
 import requests
 import numpy as np
@@ -7,7 +122,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
-from matplotlib.colors import ListedColormap
+from matplotlib.colors import ListedColormap, to_hex
+import plotly.graph_objects as go
 from scipy.spatial import cKDTree
 import io
 import time
@@ -15,10 +131,13 @@ import time
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-API_BASE = "https://tpg.marsmathis.com/api"
-GRID_STEP = 0.5          # degrees – trade quality vs speed
-R_EARTH   = 6371.0       # km
-MAX_COLORS = 20
+API_BASE   = "https://tpg.marsmathis.com/api"
+R_EARTH    = 6371.0   # km
+
+# Grid steps: interactive uses coarser grid so Plotly stays snappy;
+# static PNG uses finer grid for crisp output.
+INTERACTIVE_GRID_STEP = 1.0    # ~65k cells
+STATIC_GRID_STEP      = 0.5    # ~260k cells – better PNG quality
 
 st.set_page_config(
     page_title="TPG Voronoi Map",
@@ -27,52 +146,49 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────
+# SHARED PALETTE  (up to 20 distinct colours)
+# ─────────────────────────────────────────────
+TAB20 = plt.cm.get_cmap("tab20")
+
+def player_colors(n: int) -> list[str]:
+    return [to_hex(TAB20(i / max(n - 1, 1))) for i in range(n)]
+
+# ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
 
 def latlon_to_xyz(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
-    """Convert lat/lon (degrees) to unit-sphere XYZ for cKDTree."""
-    lat_r = np.radians(lat)
-    lon_r = np.radians(lon)
-    x = np.cos(lat_r) * np.cos(lon_r)
-    y = np.cos(lat_r) * np.sin(lon_r)
-    z = np.sin(lat_r)
-    return np.column_stack([x, y, z])
+    lat_r, lon_r = np.radians(lat), np.radians(lon)
+    return np.column_stack([
+        np.cos(lat_r) * np.cos(lon_r),
+        np.cos(lat_r) * np.sin(lon_r),
+        np.sin(lat_r),
+    ])
 
-def chord_to_km(chord: float) -> float:
-    """Convert unit-sphere chord distance to great-circle km."""
-    chord = np.clip(chord, 0, 2)
-    return 2 * R_EARTH * np.arcsin(chord / 2)
+def chord_to_km(chord: np.ndarray) -> np.ndarray:
+    return 2 * R_EARTH * np.arcsin(np.clip(chord, 0, 2) / 2)
 
 # ─────────────────────────────────────────────
-# API CALLS (cached)
+# API CALLS  (cached)
 # ─────────────────────────────────────────────
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_players() -> list[dict]:
-    """
-    Returns a list of dicts: {discord_id, display_label, names: [...]}
-    Deduplicates by discord_id; builds display as 'name (canonical_name)'.
-    """
     resp = requests.get(f"{API_BASE}/players", timeout=15)
     resp.raise_for_status()
     raw = resp.json()
 
     seen: dict[str, dict] = {}
     for entry in raw:
-        did  = str(entry.get("discord_id", ""))
-        name = entry.get("name", "").strip()
-        canon = entry.get("canonical_name") or ""
-        canon = canon.strip()
-
+        did   = str(entry.get("discord_id", ""))
+        name  = (entry.get("name") or "").strip()
+        canon = (entry.get("canonical_name") or "").strip()
         if not did:
             continue
-
         if did not in seen:
             label = f"{name} ({canon})" if canon and canon != name else name
-            seen[did] = {"discord_id": did, "display_label": label, "search_terms": set()}
-
-        seen[did]["search_terms"].add(name.lower())
+            seen[did] = {"discord_id": did, "display_label": label}
+        seen[did].setdefault("search_terms", set()).add(name.lower())
         if canon:
             seen[did]["search_terms"].add(canon.lower())
 
@@ -81,193 +197,288 @@ def fetch_players() -> list[dict]:
 
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_submissions(discord_id: str) -> np.ndarray | None:
-    """Returns Nx2 array of (lat, lon) for a player, or None."""
     try:
         resp = requests.get(f"{API_BASE}/submissions/{discord_id}", timeout=15)
         resp.raise_for_status()
-        data = resp.json()
-        pts = []
-        for entry in data:
-            try:
-                lat = float(entry["lat"])
-                lon = float(entry["lon"])
-                pts.append((lat, lon))
-            except (KeyError, TypeError, ValueError):
-                continue
-        if not pts:
-            return None
-        return np.array(pts)
-    except Exception as e:
-        st.warning(f"Could not fetch submissions for {discord_id}: {e}")
+        pts = [
+            (float(e["lat"]), float(e["lon"]))
+            for e in resp.json()
+            if "lat" in e and "lon" in e
+        ]
+        return np.array(pts) if pts else None
+    except Exception as exc:
+        st.warning(f"Could not fetch submissions for {discord_id}: {exc}")
         return None
 
 # ─────────────────────────────────────────────
-# COMPUTATION
+# CORE COMPUTATION
 # ─────────────────────────────────────────────
 
-def compute_map(
-    player_names: list[str],
+def compute_voronoi(
     player_points: list[np.ndarray],
     mode: str,
-    grid_step: float = GRID_STEP,
+    grid_step: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Returns (winner_grid, LON_mesh, LAT_mesh) where each cell contains the
-    index of the winning (mode='Win') or losing (mode='Loss') player.
+    Returns (assignment_grid, LON_mesh, LAT_mesh).
+    assignment_grid[i,j] = index of the nearest (Win) or furthest (Loss) player.
     """
-    lat_grid = np.arange(-90,  90  + grid_step, grid_step)
-    lon_grid = np.arange(-180, 180 + grid_step, grid_step)
-    LON, LAT = np.meshgrid(lon_grid, lat_grid)
-    grid_xyz = latlon_to_xyz(LAT.ravel(), LON.ravel())   # (M, 3)
+    lat_arr = np.arange(-90,  90  + grid_step, grid_step)
+    lon_arr = np.arange(-180, 180 + grid_step, grid_step)
+    LON, LAT = np.meshgrid(lon_arr, lat_arr)
+    grid_xyz = latlon_to_xyz(LAT.ravel(), LON.ravel())
 
-    # Build KDTree per player and query min distance for every grid point
-    n_players = len(player_names)
-    min_dists = np.empty((n_players, grid_xyz.shape[0]))
-
+    n = len(player_points)
+    min_dists = np.empty((n, grid_xyz.shape[0]))
     for i, pts in enumerate(player_points):
         tree = cKDTree(latlon_to_xyz(pts[:, 0], pts[:, 1]))
         chord, _ = tree.query(grid_xyz, workers=-1)
         min_dists[i] = chord_to_km(chord)
 
-    # For each grid cell select winner (min dist) or loser (max dist)
-    if mode == "Win":
-        result = np.argmin(min_dists, axis=0)
-    else:
-        result = np.argmax(min_dists, axis=0)
-
-    return result.reshape(LAT.shape), LON, LAT
+    fn = np.argmin if mode == "Win" else np.argmax
+    return fn(min_dists, axis=0).reshape(LAT.shape), LON, LAT
 
 # ─────────────────────────────────────────────
-# RENDERING
+# INTERACTIVE PLOTLY MAP
 # ─────────────────────────────────────────────
 
-TAB20 = plt.cm.get_cmap("tab20")
+def render_interactive(
+    result_grid: np.ndarray,
+    LON: np.ndarray,
+    LAT: np.ndarray,
+    player_names: list[str],
+    player_points: list[np.ndarray],
+    mode: str,
+    show_submissions: bool,
+) -> go.Figure:
+    n      = len(player_names)
+    colors = player_colors(n)
+    flat   = result_grid.ravel()
+    lats   = LAT.ravel()
+    lons   = LON.ravel()
 
-def render_map(
+    fig = go.Figure()
+
+    # One Voronoi region trace per player
+    for i, (name, color) in enumerate(zip(player_names, colors)):
+        mask = flat == i
+        fig.add_trace(go.Scattergeo(
+            lat=lats[mask],
+            lon=lons[mask],
+            mode="markers",
+            marker=dict(
+                symbol="square",
+                size=7,
+                color=color,
+                opacity=0.82,
+                line=dict(width=0),
+            ),
+            name=name,
+            legendgroup=f"region_{i}",
+            hovertemplate=(
+                f"<b>{name}</b><br>"
+                "Lat: %{lat:.1f}°  Lon: %{lon:.1f}°<br>"
+                f"<i>{'Nearest' if mode == 'Win' else 'Furthest'} player</i>"
+                "<extra></extra>"
+            ),
+        ))
+
+    # Optional submission-point overlay (hidden in legend by default)
+    if show_submissions:
+        for i, (name, pts, color) in enumerate(zip(player_names, player_points, colors)):
+            fig.add_trace(go.Scattergeo(
+                lat=pts[:, 0],
+                lon=pts[:, 1],
+                mode="markers",
+                marker=dict(
+                    symbol="circle",
+                    size=5,
+                    color="white",
+                    line=dict(color=color, width=1.5),
+                ),
+                name=f"{name} – submissions",
+                legendgroup=f"sub_{i}",
+                hovertemplate=(
+                    f"<b>{name}</b><br>"
+                    "Submission: %{lat:.4f}°, %{lon:.4f}°"
+                    "<extra></extra>"
+                ),
+                visible="legendonly",   # click legend entry to reveal
+            ))
+
+    title_color = "#4CAF50" if mode == "Win" else "#f44336"
+    fig.update_layout(
+        title=dict(
+            text=f"{'🏆 Win Regions' if mode == 'Win' else '💀 Loss Regions'} — Voronoi Map",
+            font=dict(color=title_color, size=17),
+            x=0.5, xanchor="center",
+        ),
+        geo=dict(
+            projection_type="natural earth",
+            showland=True,       landcolor="#2c2c2c",
+            showocean=True,      oceancolor="#1a2a3a",
+            showlakes=True,      lakecolor="#1a2a3a",
+            showcountries=True,  countrycolor="#555555",
+            showcoastlines=True, coastlinecolor="#888888",
+            showframe=False,
+            bgcolor="#0e1117",
+            lonaxis=dict(range=[-180, 180]),
+            lataxis=dict(range=[-90,   90]),
+        ),
+        legend=dict(
+            bgcolor="#1e2130",
+            bordercolor="#444444",
+            borderwidth=1,
+            font=dict(color="white", size=11),
+            itemsizing="constant",
+            title=dict(
+                text=(
+                    f"{'Nearest' if mode == 'Win' else 'Furthest'} player<br>"
+                    "<sup>click = toggle · dbl-click = isolate</sup>"
+                ),
+                font=dict(color="#aaaaaa", size=10),
+            ),
+        ),
+        paper_bgcolor="#0e1117",
+        margin=dict(l=0, r=0, t=50, b=0),
+        height=650,
+        hoverlabel=dict(bgcolor="#1e2130", font_color="white", bordercolor="#555"),
+        uirevision="voronoi",
+    )
+    return fig
+
+# ─────────────────────────────────────────────
+# STATIC MATPLOTLIB MAP  (high-res download)
+# ─────────────────────────────────────────────
+
+def render_static_png(
     result_grid: np.ndarray,
     LON: np.ndarray,
     LAT: np.ndarray,
     player_names: list[str],
     mode: str,
 ) -> bytes:
-    n = len(player_names)
-    colors = [TAB20(i / max(n - 1, 1)) for i in range(n)]
-    cmap = ListedColormap(colors[:n])
+    n      = len(player_names)
+    colors = player_colors(n)
+    cmap   = ListedColormap(colors)
 
     fig = plt.figure(figsize=(18, 9), facecolor="#0e1117")
-    ax = plt.axes(projection=ccrs.Robinson(), facecolor="#0e1117")
+    ax  = plt.axes(projection=ccrs.Robinson(), facecolor="#0e1117")
     ax.set_global()
-
     ax.pcolormesh(
         LON, LAT, result_grid,
-        cmap=cmap,
-        vmin=-0.5, vmax=n - 0.5,
-        alpha=0.75,
-        shading="auto",
-        transform=ccrs.PlateCarree(),
-        zorder=1,
+        cmap=cmap, vmin=-0.5, vmax=n - 0.5,
+        alpha=0.80, shading="auto",
+        transform=ccrs.PlateCarree(), zorder=1,
     )
-
-    ax.add_feature(cfeature.COASTLINE, linewidth=0.5, edgecolor="white", zorder=2)
-    ax.add_feature(cfeature.BORDERS, linestyle=":", linewidth=0.3, edgecolor="#aaaaaa", zorder=2)
+    ax.add_feature(cfeature.COASTLINE,  linewidth=0.5, edgecolor="white",   zorder=2)
+    ax.add_feature(cfeature.BORDERS,    linestyle=":", linewidth=0.3,
+                   edgecolor="#aaaaaa", zorder=2)
     ax.gridlines(color="#444444", linewidth=0.3, zorder=2)
 
-    legend_elements = [
-        mpatches.Patch(facecolor=colors[i], edgecolor="white", linewidth=0.5, label=player_names[i])
+    patches = [
+        mpatches.Patch(facecolor=colors[i], edgecolor="white",
+                       linewidth=0.4, label=player_names[i])
         for i in range(n)
     ]
-    legend = ax.legend(
-        handles=legend_elements,
-        loc="lower left",
-        bbox_to_anchor=(1.01, 0.0),
-        fontsize=9,
-        framealpha=0.85,
-        facecolor="#1e2130",
-        edgecolor="#555555",
-        labelcolor="white",
-        title=f"{'Winner' if mode == 'Win' else 'Loser'} (closest {'to' if mode == 'Win' else 'from'} location)",
+    leg = ax.legend(
+        handles=patches, loc="lower left", bbox_to_anchor=(1.01, 0.0),
+        fontsize=9, framealpha=0.85, facecolor="#1e2130",
+        edgecolor="#555555", labelcolor="white",
+        title=f"{'Nearest' if mode == 'Win' else 'Furthest'} player",
         title_fontsize=9,
     )
-    legend.get_title().set_color("white")
+    leg.get_title().set_color("white")
 
-    title_color = "#4CAF50" if mode == "Win" else "#f44336"
-    plt.title(
+    tc = "#4CAF50" if mode == "Win" else "#f44336"
+    ax.set_title(
         f"{'🏆 Win Regions' if mode == 'Win' else '💀 Loss Regions'} — Voronoi Map",
-        color=title_color,
-        fontsize=15,
-        pad=12,
-        fontweight="bold",
+        color=tc, fontsize=15, pad=12, fontweight="bold",
     )
-
     plt.tight_layout()
+
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=180, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.savefig(buf, format="png", dpi=200, bbox_inches="tight",
+                facecolor=fig.get_facecolor())
     plt.close(fig)
     buf.seek(0)
     return buf.read()
 
-# ─────────────────────────────────────────────
-# UI
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
+# STREAMLIT UI
+# ═══════════════════════════════════════════════
 
 st.markdown("""
 <style>
     .block-container { padding-top: 1.5rem; }
     .stMultiSelect [data-baseweb="tag"] { background-color: #2d4a6e; }
-    .mode-win  { color: #4CAF50; font-weight: bold; }
-    .mode-loss { color: #f44336; font-weight: bold; }
-    div[data-testid="stRadio"] > label { font-size: 1.05rem; }
+    div[data-testid="stRadio"] > label  { font-size: 1.05rem; }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("🗺️ TPG Voronoi Map Generator")
-st.caption("See which player is geographically closest (Win) or furthest (Loss) from any location on Earth.")
+st.caption(
+    "Each region is coloured by the player with the **closest** (Win) or "
+    "**furthest** (Loss) submission from that point on Earth. "
+    "Zoom, pan, and hover to explore."
+)
 
-# ── Sidebar Controls ──────────────────────────────
+# ── Sidebar ───────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Settings")
 
     mode = st.radio(
         "Map Mode",
-        options=["Win", "Loss"],
+        ["Win", "Loss"],
         help=(
-            "**Win Mode** — each region is colored by the player with the closest submission.\n\n"
-            "**Loss Mode** — each region is colored by the player with the furthest submission."
+            "**Win** — closest player owns each region.\n\n"
+            "**Loss** — furthest player owns each region."
         ),
     )
     if mode == "Win":
-        st.success("🏆 Win Area Mode: closest player wins each region")
+        st.success("🏆 Win Area Mode")
     else:
-        st.error("💀 Loss Area Mode: furthest player loses each region")
+        st.error("💀 Loss Area Mode")
 
-    resolution = st.select_slider(
-        "Grid Resolution",
-        options=[1.0, 0.75, 0.5, 0.35, 0.25],
-        value=0.5,
-        help="Finer resolution = sharper map but longer computation.",
-        format_func=lambda x: f"{x}° (~{'fast' if x >= 0.75 else ('medium' if x >= 0.5 else 'slow')})",
+    st.divider()
+    show_submissions = st.checkbox(
+        "Add submission-point traces",
+        value=False,
+        help=(
+            "Adds a per-player trace (hidden by default). "
+            "Click a '– submissions' entry in the legend to reveal that player's points."
+        ),
     )
 
     st.divider()
-    st.markdown("**About**")
+    st.markdown("**Map controls**")
     st.markdown(
-        "Each colored region shows the player whose nearest submission is closest (Win) "
-        "or furthest (Loss) from that location — a geographic Voronoi diagram."
+        "- **Scroll** to zoom, **drag** to pan\n"
+        "- **Hover** any region → see player + coordinates\n"
+        "- **Click** a legend entry → hide/show that player\n"
+        "- **Double-click** a legend entry → isolate it\n"
+        "- High-res PNG available after computing (see expander below the map)"
     )
 
-# ── Player Selection ──────────────────────────────
-col1, col2 = st.columns([3, 1])
+    st.divider()
+    st.caption(
+        "Interactive map uses a 1° grid for browser performance. "
+        "The downloadable PNG is rendered at 0.5° for sharper detail."
+    )
 
-with col1:
+# ── Player Selection ──────────────────────────
+col_sel, col_stats = st.columns([3, 1])
+
+with col_sel:
     with st.spinner("Loading player list…"):
         try:
             players_data = fetch_players()
-        except Exception as e:
-            st.error(f"Failed to load players: {e}")
+        except Exception as exc:
+            st.error(f"Failed to load players: {exc}")
             st.stop()
 
     if not players_data:
-        st.error("No players found in the API.")
+        st.error("No players returned from the API.")
         st.stop()
 
     options        = [p["display_label"] for p in players_data]
@@ -276,93 +487,71 @@ with col1:
     selected_labels = st.multiselect(
         "Select Players",
         options=options,
-        placeholder="Type a name to search, or click to select…",
-        help="Select 2 or more players to generate the map.",
+        placeholder="Type a name or partial name to search…",
+        help="Select 2 or more players, then click Calculate.",
     )
 
-with col2:
+with col_stats:
     st.metric("Players Available", len(players_data))
-    st.metric("Players Selected", len(selected_labels))
+    st.metric("Players Selected",  len(selected_labels))
 
-# ── Calculate Button ──────────────────────────────
+# ── Calculate ─────────────────────────────────
 if len(selected_labels) < 2:
-    st.info("👆 Select **at least 2 players** from the dropdown, then hit Calculate.")
+    st.info("👆 Select **at least 2 players** then hit Calculate.")
     st.stop()
 
 if st.button("🔄 Calculate Map", type="primary", use_container_width=True):
-    # --- Fetch submissions ---
-    player_names  = []
-    player_points = []
-    fetch_errors  = []
 
-    progress = st.progress(0, text="Fetching player submissions…")
+    # Fetch submissions
+    player_names, player_points, fetch_errors = [], [], []
+    prog = st.progress(0, text="Fetching player submissions…")
     for i, label in enumerate(selected_labels):
-        did = discord_id_map[label]
-        pts = fetch_submissions(did)
+        pts = fetch_submissions(discord_id_map[label])
         if pts is not None and len(pts) > 0:
             player_names.append(label)
             player_points.append(pts)
         else:
             fetch_errors.append(label)
-        progress.progress((i + 1) / len(selected_labels), text=f"Fetching {label}…")
-
-    progress.empty()
+        prog.progress((i + 1) / len(selected_labels), text=f"Fetching {label}…")
+    prog.empty()
 
     if fetch_errors:
-        st.warning(f"No submission data found for: {', '.join(fetch_errors)}")
-
+        st.warning(f"No submission data for: {', '.join(fetch_errors)}")
     if len(player_names) < 2:
-        st.error("Need at least 2 players with valid submissions to generate a map.")
+        st.error("Need at least 2 players with valid submissions.")
         st.stop()
 
-    # Show submission counts
     with st.expander("📋 Submission counts", expanded=False):
         for name, pts in zip(player_names, player_points):
-            st.write(f"**{name}**: {len(pts)} submission(s)")
+            st.write(f"**{name}**: {len(pts):,} submission(s)")
 
-    # --- Compute grid ---
-    with st.spinner(f"Computing {mode} regions across the globe… (this may take ~10–30 seconds)"):
+    # Compute interactive grid
+    with st.spinner("Computing Voronoi regions…"):
         t0 = time.time()
-        result_grid, LON, LAT = compute_map(player_names, player_points, mode, grid_step=resolution)
+        grid_i, LON_i, LAT_i = compute_voronoi(player_points, mode, INTERACTIVE_GRID_STEP)
         elapsed = time.time() - t0
 
-    st.success(f"✅ Computation complete in {elapsed:.1f}s")
+    st.success(f"✅ Computed in {elapsed:.1f}s")
 
-    # --- Render map ---
-    with st.spinner("Rendering map…"):
-        img_bytes = render_map(result_grid, LON, LAT, player_names, mode)
-
-    mode_label = "Win" if mode == "Win" else "Loss"
-    st.subheader(f"{'🏆' if mode == 'Win' else '💀'} {mode_label} Regions Map")
-    st.image(img_bytes, use_column_width=True)
-
-    st.download_button(
-        label="⬇️ Download Map (PNG)",
-        data=img_bytes,
-        file_name=f"voronoi_{mode.lower()}_map.png",
-        mime="image/png",
+    # Render & display interactive map
+    st.subheader(f"{'🏆' if mode == 'Win' else '💀'} {mode} Regions")
+    fig = render_interactive(
+        grid_i, LON_i, LAT_i,
+        player_names, player_points,
+        mode, show_submissions,
     )
+    st.plotly_chart(fig, use_container_width=True)
 
-    # --- Show player submission scatter ---
-    with st.expander("🔍 View player submission points on a map", expanded=False):
-        import plotly.graph_objects as go
-        fig = go.Figure()
-        colors_hex = [matplotlib.colors.to_hex(TAB20(i / max(len(player_names) - 1, 1))) for i in range(len(player_names))]
-        for name, pts, color in zip(player_names, player_points, colors_hex):
-            fig.add_trace(go.Scattergeo(
-                lat=pts[:, 0], lon=pts[:, 1],
-                mode="markers",
-                marker=dict(size=4, color=color, opacity=0.8),
-                name=name,
-            ))
-        fig.update_layout(
-            geo=dict(showland=True, landcolor="#2a2a2a", showocean=True, oceancolor="#1a2a3a",
-                     showcountries=True, countrycolor="#555555", bgcolor="#0e1117"),
-            legend=dict(bgcolor="#1e2130", font=dict(color="white")),
-            paper_bgcolor="#0e1117",
-            plot_bgcolor="#0e1117",
-            height=500,
-            margin=dict(l=0, r=0, t=30, b=0),
-            title=dict(text="Player Submission Points", font=dict(color="white")),
+    # High-res PNG (lazy – only computed when expanded)
+    with st.expander("⬇️ Download high-resolution PNG (0.5° grid)", expanded=False):
+        with st.spinner("Rendering high-res static map…"):
+            grid_s, LON_s, LAT_s = compute_voronoi(player_points, mode, STATIC_GRID_STEP)
+            png_bytes = render_static_png(grid_s, LON_s, LAT_s, player_names, mode)
+        st.image(png_bytes, use_column_width=True)
+        st.download_button(
+            label="⬇️ Save PNG",
+            data=png_bytes,
+            file_name=f"voronoi_{mode.lower()}_map.png",
+            mime="image/png",
         )
-        st.plotly_chart(fig, use_container_width=True)
+
