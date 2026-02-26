@@ -18,8 +18,8 @@ import time
 # ─────────────────────────────────────────────
 API_BASE              = "https://tpg.marsmathis.com/api"
 R_EARTH               = 6371.0
-INTERACTIVE_GRID_STEP = 0.5
-STATIC_GRID_STEP      = 0.5
+DEFAULT_INTERACTIVE_STEP = 1.0
+DEFAULT_STATIC_STEP      = 0.5
 
 st.set_page_config(page_title="TPG Voronoi Map", page_icon="🗺️", layout="wide")
 
@@ -192,7 +192,7 @@ def render_interactive(
     player_names: list[str],
     player_points: list[np.ndarray],
     mode: str,
-    show_submissions: bool,
+    interactive_step: float,
     query_result: dict | None = None,
     query_lat: float | None   = None,
     query_lon: float | None   = None,
@@ -203,6 +203,10 @@ def render_interactive(
     lats_g = LAT.ravel()
     lons_g = LON.ravel()
 
+    # Scale marker size so squares tile correctly at the chosen resolution
+    # 1° ≈ size 7, 0.5° ≈ size 4, 0.25° ≈ size 2
+    marker_size = max(2, round(7 * interactive_step))
+
     fig = go.Figure()
 
     # ── 1. Voronoi region tiles (one trace per player) ───────────
@@ -212,7 +216,7 @@ def render_interactive(
             lat=lats_g[mask],
             lon=lons_g[mask],
             mode="markers",
-            marker=dict(symbol="square", size=4, color=color, opacity=0.78, line=dict(width=0)),
+            marker=dict(symbol="square", size=marker_size, color=color, opacity=0.78, line=dict(width=0)),
             name=name,
             legendgroup=f"region_{i}",
             hovertemplate=(
@@ -235,24 +239,7 @@ def render_interactive(
         name="coastlines",
     ))
 
-    # ── 3. Optional raw submission points ────────────────────────
-    if show_submissions:
-        for i, (name, pts, color) in enumerate(zip(player_names, player_points, colors)):
-            fig.add_trace(go.Scattergeo(
-                lat=pts[:, 0], lon=pts[:, 1],
-                mode="markers",
-                marker=dict(symbol="circle", size=5, color="white",
-                            line=dict(color=color, width=1.5)),
-                name=f"{name} – submissions",
-                legendgroup=f"sub_{i}",
-                hovertemplate=(
-                    f"<b>{name}</b> – submission<br>"
-                    "Lat: %{lat:.4f}°  Lon: %{lon:.4f}°<extra></extra>"
-                ),
-                visible="legendonly",
-            ))
-
-    # ── 4. Queried point marker ───────────────────────────────────
+    # ── 3. Queried point marker ───────────────────────────────────
     if query_result is not None and query_lat is not None and query_lon is not None:
         winner     = query_result["result"]
         win_idx    = player_names.index(winner)
@@ -439,10 +426,23 @@ with st.sidebar:
         st.error("💀 Loss Area Mode")
 
     st.divider()
-    show_submissions = st.checkbox(
-        "Add submission-point traces",
-        value=False,
-        help="Adds hidden per-player traces. Click a '– submissions' entry in the legend to show them.",
+    st.markdown("**Resolution**")
+    st.caption("⚠️ 1° is recommended. Finer grids look sharper but compute and render more slowly.")
+
+    interactive_step = st.select_slider(
+        "Interactive map grid",
+        options=[1.0, 0.75, 0.5, 0.35, 0.25],
+        value=DEFAULT_INTERACTIVE_STEP,
+        format_func=lambda x: f"{x}° {'(recommended)' if x == 1.0 else '(slow)' if x <= 0.35 else ''}",
+        help="Controls the Voronoi grid density for the interactive map. Finer = sharper borders but slower to compute and heavier in the browser.",
+    )
+
+    static_step = st.select_slider(
+        "PNG download grid",
+        options=[1.0, 0.75, 0.5, 0.35, 0.25],
+        value=DEFAULT_STATIC_STEP,
+        format_func=lambda x: f"{x}° {'(recommended)' if x == 1.0 else '(slow)' if x <= 0.35 else ''}",
+        help="Controls the grid density for the exported PNG. Independent of the interactive map setting.",
     )
 
     st.divider()
@@ -454,8 +454,7 @@ with st.sidebar:
         "- **Double-click** legend entry → isolate\n"
         "- Use the **Point Query** below the map to check any coordinate"
     )
-    st.divider()
-    st.caption("Both interactive map and PNG use a 0.5° grid.")
+
 
 # ── Player Selection ──────────────────────────
 col_sel, col_stats = st.columns([3, 1])
@@ -511,14 +510,14 @@ if st.button("🔄 Calculate Map", type="primary", use_container_width=True):
 
     with st.spinner("Computing Voronoi regions…"):
         t0 = time.time()
-        grid_i, LON_i, LAT_i = compute_voronoi(player_points, mode, INTERACTIVE_GRID_STEP)
+        grid_i, LON_i, LAT_i = compute_voronoi(player_points, mode, interactive_step)
         elapsed = time.time() - t0
 
     # Persist in session state so point-query rerenders don't recompute
     st.session_state["voronoi"] = dict(
         grid=grid_i, LON=LON_i, LAT=LAT_i,
         player_names=player_names, player_points=player_points,
-        mode=mode,
+        mode=mode, interactive_step=interactive_step,
     )
     st.session_state.pop("query_result", None)   # clear stale query on recalculate
     st.success(f"✅ Computed in {elapsed:.1f}s")
@@ -548,7 +547,8 @@ st.subheader(f"{'🏆' if stored_mode == 'Win' else '💀'} {stored_mode} Region
 fig = render_interactive(
     v["grid"], v["LON"], v["LAT"],
     player_names, player_points,
-    stored_mode, show_submissions,
+    stored_mode,
+    interactive_step=v["interactive_step"],
     query_result=qr, query_lat=q_lat, query_lon=q_lon,
 )
 st.plotly_chart(fig, use_container_width=True, key="main_map")
@@ -623,9 +623,9 @@ if qr is not None:
 
 # ── High-res PNG Download ─────────────────────
 st.divider()
-with st.expander("⬇️ Download high-resolution PNG (0.5° grid)", expanded=False):
-    with st.spinner("Rendering high-res map…"):
-        grid_s, LON_s, LAT_s = compute_voronoi(player_points, stored_mode, STATIC_GRID_STEP)
+with st.expander(f"⬇️ Download PNG ({static_step}° grid)", expanded=False):
+    with st.spinner("Rendering map…"):
+        grid_s, LON_s, LAT_s = compute_voronoi(player_points, stored_mode, static_step)
         png_bytes = render_static_png(grid_s, LON_s, LAT_s, player_names, stored_mode)
     st.image(png_bytes, use_column_width=True)
     st.download_button(
