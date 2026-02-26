@@ -1,4 +1,4 @@
-# TPG Voronoi Map Generator
+# TPG Win/Loss Map Generator
 
 A Streamlit app that renders geographic Voronoi-style maps showing which TPG player has the closest (Win Mode) or furthest (Loss Mode) submission from any location on Earth.
 
