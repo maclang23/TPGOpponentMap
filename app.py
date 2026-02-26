@@ -18,7 +18,7 @@ import time
 # ─────────────────────────────────────────────
 API_BASE              = "https://tpg.marsmathis.com/api"
 R_EARTH               = 6371.0
-INTERACTIVE_GRID_STEP = 1.0
+INTERACTIVE_GRID_STEP = 0.5
 STATIC_GRID_STEP      = 0.5
 
 st.set_page_config(page_title="TPG Voronoi Map", page_icon="🗺️", layout="wide")
@@ -212,7 +212,7 @@ def render_interactive(
             lat=lats_g[mask],
             lon=lons_g[mask],
             mode="markers",
-            marker=dict(symbol="square", size=7, color=color, opacity=0.78, line=dict(width=0)),
+            marker=dict(symbol="square", size=4, color=color, opacity=0.78, line=dict(width=0)),
             name=name,
             legendgroup=f"region_{i}",
             hovertemplate=(
@@ -455,7 +455,7 @@ with st.sidebar:
         "- Use the **Point Query** below the map to check any coordinate"
     )
     st.divider()
-    st.caption("Interactive map: 1° grid for browser speed. PNG download: 0.5° for detail.")
+    st.caption("Both interactive map and PNG use a 0.5° grid.")
 
 # ── Player Selection ──────────────────────────
 col_sel, col_stats = st.columns([3, 1])
