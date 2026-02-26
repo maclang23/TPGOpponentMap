@@ -44,9 +44,11 @@ def chord_to_km(chord: np.ndarray) -> np.ndarray:
 
 def min_dist_to_player(query_lat: float, query_lon: float, pts: np.ndarray) -> float:
     """Great-circle distance (km) from a point to the nearest submission in pts."""
-    tree  = cKDTree(latlon_to_xyz(pts[:, 0], pts[:, 1]))
-    chord, _ = tree.query(latlon_to_xyz(np.array([query_lat]), np.array([query_lon])))
-    return float(chord_to_km(chord))
+    # Squeeze to shape (3,) so cKDTree.query returns a plain scalar, not a (1,) array
+    query_xyz = latlon_to_xyz(np.array([query_lat]), np.array([query_lon]))[0]
+    tree = cKDTree(latlon_to_xyz(pts[:, 0], pts[:, 1]))
+    chord, _ = tree.query(query_xyz)
+    return float(2 * R_EARTH * np.arcsin(np.clip(float(chord), 0, 2) / 2))
 
 # ─────────────────────────────────────────────
 # CONTINENT / COASTLINE GEOMETRY  (cached)
