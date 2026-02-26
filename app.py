@@ -520,7 +520,7 @@ if st.button("Calculate Map", type="primary", use_container_width=True):
         mode=mode, interactive_step=interactive_step,
     )
     st.session_state.pop("query_result", None)   # clear stale query on recalculate
-    st.success(f"✅ Computed in {elapsed:.1f}s")
+    st.success(f"Retrieved all submissions in {elapsed:.1f}s")
 
 # ── Render map (from session state so point queries don't re-trigger compute) ──
 if "voronoi" not in st.session_state:
