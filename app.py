@@ -342,34 +342,64 @@ def render_static_png(
     player_names: list[str],
     mode: str,
 ) -> bytes:
+    """
+    Render using PlateCarree (equirectangular) + imshow to avoid pyproj
+    reprojection issues that occur with Robinson on some environments.
+    Coastlines and borders are drawn via cartopy features in the same CRS,
+    so no cross-projection transform is needed.
+    """
     n      = len(player_names)
     colors = player_colors(n)
+    cmap   = ListedColormap(colors)
 
-    fig = plt.figure(figsize=(18, 9), facecolor="#0e1117")
-    ax  = plt.axes(projection=ccrs.Robinson(), facecolor="#0e1117")
+    fig = plt.figure(figsize=(20, 10), facecolor="#0e1117")
+    ax  = plt.axes(projection=ccrs.PlateCarree(), facecolor="#0e1117")
     ax.set_global()
-    ax.pcolormesh(LON, LAT, result_grid,
-                  cmap=ListedColormap(colors), vmin=-0.5, vmax=n - 0.5,
-                  alpha=0.80, shading="auto", transform=ccrs.PlateCarree(), zorder=1)
-    ax.add_feature(cfeature.COASTLINE,  linewidth=0.6, edgecolor="white",   zorder=2)
-    ax.add_feature(cfeature.BORDERS,    linestyle=":", linewidth=0.35, edgecolor="#aaaaaa", zorder=2)
-    ax.gridlines(color="#444444", linewidth=0.3, zorder=2)
 
-    patches = [mpatches.Patch(facecolor=colors[i], edgecolor="white",
-                               linewidth=0.4, label=player_names[i]) for i in range(n)]
-    leg = ax.legend(handles=patches, loc="lower left", bbox_to_anchor=(1.01, 0.0),
-                    fontsize=9, framealpha=0.85, facecolor="#1e2130",
-                    edgecolor="#555555", labelcolor="white",
-                    title=f"{'Nearest' if mode=='Win' else 'Furthest'} player",
-                    title_fontsize=9)
+    # imshow is safe with PlateCarree — no reprojection required
+    ax.imshow(
+        result_grid,
+        origin="lower",
+        extent=[-180, 180, -90, 90],
+        cmap=cmap,
+        vmin=-0.5, vmax=n - 0.5,
+        alpha=0.82,
+        aspect="auto",
+        interpolation="nearest",
+        transform=ccrs.PlateCarree(),
+        zorder=1,
+    )
+
+    # Features stay in the same PlateCarree CRS — no pyproj transform chain
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.7, edgecolor="white",    zorder=2)
+    ax.add_feature(cfeature.BORDERS,   linewidth=0.4, edgecolor="#aaaaaa",
+                   linestyle=":",      zorder=2)
+    ax.gridlines(color="#333333", linewidth=0.3, zorder=2)
+
+    patches = [
+        mpatches.Patch(facecolor=colors[i], edgecolor="white",
+                       linewidth=0.4, label=player_names[i])
+        for i in range(n)
+    ]
+    leg = ax.legend(
+        handles=patches, loc="lower left", bbox_to_anchor=(1.01, 0.0),
+        fontsize=9, framealpha=0.85, facecolor="#1e2130",
+        edgecolor="#555555", labelcolor="white",
+        title=f"{'Nearest' if mode == 'Win' else 'Furthest'} player",
+        title_fontsize=9,
+    )
     leg.get_title().set_color("white")
+
     tc = "#4CAF50" if mode == "Win" else "#f44336"
-    ax.set_title(f"{'🏆 Win Regions' if mode == 'Win' else '💀 Loss Regions'} — Voronoi Map",
-                 color=tc, fontsize=15, pad=12, fontweight="bold")
+    ax.set_title(
+        f"{'🏆 Win Regions' if mode == 'Win' else '💀 Loss Regions'} — Voronoi Map",
+        color=tc, fontsize=15, pad=12, fontweight="bold",
+    )
     plt.tight_layout()
 
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=200, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.savefig(buf, format="png", dpi=200, bbox_inches="tight",
+                facecolor=fig.get_facecolor())
     plt.close(fig)
     buf.seek(0)
     return buf.read()
