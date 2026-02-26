@@ -265,10 +265,10 @@ def render_interactive(
             mode="markers+text",
             marker=dict(symbol="circle", size=14, color=win_color,
                         line=dict(color="white", width=2)),
-            text=[f"📍 {label_verb}: {winner}"],
+            text=[f"{label_verb}: {winner}"],
             textposition="top center",
             textfont=dict(color="white", size=11),
-            name=f"📍 Queried point",
+            name=f"Queried point",
             hovertemplate=(
                 f"<b>Queried point</b><br>"
                 f"Lat: {query_lat:.4f}°  Lon: {query_lon:.4f}°<br>"
@@ -284,7 +284,7 @@ def render_interactive(
     tc = "#4CAF50" if mode == "Win" else "#f44336"
     fig.update_layout(
         title=dict(
-            text=f"{'🏆 Win Regions' if mode == 'Win' else '💀 Loss Regions'} — Voronoi Map",
+            text=f"{'Win Regions' if mode == 'Win' else 'Loss Regions'}",
             font=dict(color=tc, size=17), x=0.5, xanchor="center",
         ),
         geo=dict(
@@ -379,7 +379,7 @@ def render_static_png(
 
     tc = "#4CAF50" if mode == "Win" else "#f44336"
     ax.set_title(
-        f"{'🏆 Win Regions' if mode == 'Win' else '💀 Loss Regions'} — Voronoi Map",
+        f"{'Win Regions' if mode == 'Win' else 'Loss Regions'}",
         color=tc, fontsize=15, pad=12, fontweight="bold",
     )
     plt.tight_layout()
@@ -407,11 +407,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🗺️ TPG Voronoi Map Generator")
+st.title("TPG Win or Loss Map Generator")
 st.caption(
     "Each region is coloured by the player with the **closest** (Win) or "
     "**furthest** (Loss) submission from that point on Earth. "
-    "Zoom, pan, hover — and query any location below the map."
+    "Zoom, pan, hover, and query any location below the map."
 )
 
 # ── Sidebar ───────────────────────────────────
@@ -419,11 +419,11 @@ with st.sidebar:
     st.header("⚙️ Settings")
 
     mode = st.radio("Map Mode", ["Win", "Loss"],
-                    help="**Win** — closest player owns each region.\n\n**Loss** — furthest player owns each region.")
+                    help="**Win** — closest player owns each region.\n\n**Loss** — furthest player owns each region (Gauntlet elimination).")
     if mode == "Win":
-        st.success("🏆 Win Area Mode")
+        st.success("Win Area Mode")
     else:
-        st.error("💀 Loss Area Mode")
+        st.error("Loss Area Mode")
 
     st.divider()
     st.markdown("**Resolution**")
@@ -486,10 +486,10 @@ with col_stats:
 
 # ── Calculate ─────────────────────────────────
 if len(selected_labels) < 2:
-    st.info("👆 Select **at least 2 players** then hit Calculate.")
+    st.info("Select **at least 2 players** then hit Calculate.")
     st.stop()
 
-if st.button("🔄 Calculate Map", type="primary", use_container_width=True):
+if st.button("Calculate Map", type="primary", use_container_width=True):
     player_names, player_points, fetch_errors = [], [], []
     prog = st.progress(0, text="Fetching player submissions…")
     for i, label in enumerate(selected_labels):
@@ -539,11 +539,11 @@ qr        = st.session_state.get("query_result")
 q_lat     = st.session_state.get("query_lat")
 q_lon     = st.session_state.get("query_lon")
 
-with st.expander("📋 Submission counts", expanded=False):
+with st.expander("Submission counts", expanded=False):
     for name, pts in zip(player_names, player_points):
         st.write(f"**{name}**: {len(pts):,} submission(s)")
 
-st.subheader(f"{'🏆' if stored_mode == 'Win' else '💀'} {stored_mode} Regions")
+st.subheader(f"{stored_mode} Regions")
 fig = render_interactive(
     v["grid"], v["LON"], v["LAT"],
     player_names, player_points,
@@ -555,7 +555,7 @@ st.plotly_chart(fig, use_container_width=True, key="main_map")
 
 # ── Point Query ───────────────────────────────
 st.divider()
-st.subheader("📍 Point Query")
+st.subheader("Specific Point Results")
 st.caption("Enter any coordinates to find out which player wins or loses at that exact location.")
 
 qcol1, qcol2, qcol3 = st.columns([2, 2, 1])
@@ -566,7 +566,7 @@ with qcol2:
 with qcol3:
     st.write("")   # vertical alignment spacer
     st.write("")
-    query_clicked = st.button("🔍 Query", type="primary", use_container_width=True)
+    query_clicked = st.button("Rank", type="primary", use_container_width=True)
 
 if query_clicked:
     with st.spinner("Calculating distances…"):
@@ -578,7 +578,7 @@ if query_clicked:
 
 if qr is not None:
     winner     = qr["result"]
-    label_verb = "Winner 🏆" if stored_mode == "Win" else "Loser 💀"
+    label_verb = "Winner" if stored_mode == "Win" else "Loser"
     win_color  = player_colors(len(player_names))[player_names.index(winner)]
 
     res_cols = st.columns([2, 3])
@@ -623,13 +623,13 @@ if qr is not None:
 
 # ── High-res PNG Download ─────────────────────
 st.divider()
-with st.expander(f"⬇️ Download PNG ({static_step}° grid)", expanded=False):
+with st.expander(f"Download PNG ({static_step}° grid)", expanded=False):
     with st.spinner("Rendering map…"):
         grid_s, LON_s, LAT_s = compute_voronoi(player_points, stored_mode, static_step)
         png_bytes = render_static_png(grid_s, LON_s, LAT_s, player_names, stored_mode)
     st.image(png_bytes, use_column_width=True)
     st.download_button(
-        label="⬇️ Save PNG",
+        label="Save PNG",
         data=png_bytes,
         file_name=f"voronoi_{stored_mode.lower()}_map.png",
         mime="image/png",
